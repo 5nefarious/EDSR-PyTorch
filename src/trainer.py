@@ -36,13 +36,11 @@ class Trainer():
         self.loss.start_log()
         self.model.train()
 
-        timer_data, timer_model = utility.timer(), utility.timer()
+        pbar = tqdm(total=len(self.loader_train.dataset))
         # TEMP
         self.loader_train.dataset.set_scale(0)
         for batch, (lr, hr, _,) in enumerate(self.loader_train):
             lr, hr = self.prepare(lr, hr)
-            timer_data.hold()
-            timer_model.tic()
 
             self.optimizer.zero_grad()
             sr = self.model(lr, 0)
@@ -55,17 +53,10 @@ class Trainer():
                 )
             self.optimizer.step()
 
-            timer_model.hold()
+            pbar.write(self.loss.display_loss(batch))
+            pbar.update(self.args.batch_size)
 
-            if (batch + 1) % self.args.print_every == 0:
-                self.ckp.write_log('[{}/{}]\t{}\t{:.1f}+{:.1f}s'.format(
-                    (batch + 1) * self.args.batch_size,
-                    len(self.loader_train.dataset),
-                    self.loss.display_loss(batch),
-                    timer_model.release(),
-                    timer_data.release()))
-
-            timer_data.tic()
+        pbar.close()
 
         self.loss.end_log(len(self.loader_train))
         self.error_last = self.loss.log[-1, -1]
