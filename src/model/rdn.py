@@ -7,6 +7,24 @@ import torch
 import torch.nn as nn
 
 
+def rgb2ycbcr(x):
+    R, G, B = x.split(1, dim=1)
+
+    Y  =   0.299*R + 0.587*G + 0.144*B
+    Cb = (-0.299*R - 0.587*G + 0.886*B)/1.772 + 128
+    Cr = ( 0.701*R - 0.587*G - 0.114*B)/1.402 + 128
+
+    return torch.cat((Y, Cb, Cr), dim=1)
+
+def ycbcr2rgb(x):
+    Y, Cb, Cr = x.split(1, dim=1)
+
+    R = Y                          +       1.402*(Cr - 128)
+    G = Y - 0.114*1.772*(Cb - 128) + 0.299*1.402*(Cr - 128)
+    B = Y +       1.772*(Cb - 128)
+
+    return torch.cat((R, G, B), dim=1)
+
 def make_model(args, parent=False):
     return RDN(args)
 
@@ -49,10 +67,14 @@ class RDN(nn.Module):
         G0 = args.G0
         kSize = args.RDNkSize
 
+        self.upscale = nn.Upsample(scale_factor=r, mode='bilinear',
+            align_corners=False)
+
         # number of RDB blocks, conv layers, out channels
         self.D, C, G = {
             'A': (20, 6, 32),
             'B': (16, 8, 64),
+            'C': (8, 4, 32),
         }[args.RDNconfig]
 
         # Shallow feature extraction net
@@ -75,9 +97,9 @@ class RDN(nn.Module):
         # Up-sampling net
         if r == 2 or r == 3:
             self.UPNet = nn.Sequential(*[
-                nn.Conv2d(G0, G * r * r, kSize, padding=(kSize-1)//2, stride=1),
+                nn.Conv2d(G0, G * r**2, kSize, padding=(kSize-1)//2, stride=1),
                 nn.PixelShuffle(r),
-                nn.Conv2d(G, args.n_colors, kSize, padding=(kSize-1)//2, stride=1)
+                nn.Conv2d(G, 1, kSize, padding=(kSize-1)//2, stride=1)
             ])
         elif r == 4:
             self.UPNet = nn.Sequential(*[
@@ -85,12 +107,15 @@ class RDN(nn.Module):
                 nn.PixelShuffle(2),
                 nn.Conv2d(G, G * 4, kSize, padding=(kSize-1)//2, stride=1),
                 nn.PixelShuffle(2),
-                nn.Conv2d(G, args.n_colors, kSize, padding=(kSize-1)//2, stride=1)
+                nn.Conv2d(G, 1, kSize, padding=(kSize-1)//2, stride=1)
             ])
         else:
             raise ValueError("scale must be 2 or 3 or 4.")
 
     def forward(self, x):
+        x = rgb2ycbcr(x)
+        chroma = x[:, 1:]
+
         f__1 = self.SFENet1(x)
         x  = self.SFENet2(f__1)
 
@@ -102,4 +127,8 @@ class RDN(nn.Module):
         x = self.GFF(torch.cat(RDBs_out,1))
         x += f__1
 
-        return self.UPNet(x)
+        y = self.UPNet(x)
+        chroma = self.upscale(chroma)
+
+        x = torch.cat((y, chroma), dim=1)
+        return ycbcr2rgb(x)
